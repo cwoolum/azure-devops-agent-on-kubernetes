@@ -25,13 +25,12 @@ parameters:
 steps:
   - checkout: self
 
-  # Cache Docker layers
+  # Setup Docker Buildx for advanced caching
   - ${{ if parameters.enableCaching }}:
-    - task: Cache@2
-      displayName: 'Cache Docker layers'
-      inputs:
-        key: 'docker | "$(Agent.OS)" | Dockerfile'
-        path: /tmp/.buildx-cache
+    - script: |
+        docker buildx create --use --driver docker-container --name mybuilder || true
+        docker buildx inspect --bootstrap
+      displayName: 'Setup Docker Buildx for registry caching'
 
   # Cache Helm dependencies
   - ${{ if parameters.enableCaching }}:
@@ -78,7 +77,7 @@ steps:
       scriptLocation: 'inlineScript'
       inlineScript: 'az acr login --name ${{ parameters.acrName }}'
 
-  # Build and push Docker image
+  # Build and push Docker image with ACR registry caching
   - task: Docker@2
     displayName: 'Build and push Docker image'
     inputs:
@@ -91,6 +90,10 @@ steps:
         --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
         --build-arg VCS_REF=$(Build.SourceVersion)
         --build-arg VERSION=$(Build.BuildNumber)
+        ${{ if parameters.enableCaching }}
+        --cache-from type=registry,ref=${{ parameters.acrName }}.azurecr.io/${{ parameters.imageName }}:cache
+        --cache-to type=registry,ref=${{ parameters.acrName }}.azurecr.io/${{ parameters.imageName }}:cache,mode=max
+        ${{ endif }}
       tags: |
         ${{ parameters.imageTag }}
         latest

@@ -20,15 +20,14 @@ steps:
     displayName: 'Login to Azure'
     inputs:
       azureSubscription: 'Azure'
-      scriptType: bash
-      scriptLocation: inlineScript
-      inlineScript: |
-        az acr login --name $ACR_NAME
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: 'az acr login --name $ACR_NAME'
 
   - task: Docker@2
     displayName: 'Build and push Docker image'
     inputs:
-      containerRegistry: 'Azure'  # Use the same Azure service connection as above
+      containerRegistry: 'fanfindadmin'
       repository: '$(ACR_NAME).azurecr.io/$(IMAGE_NAME)'
       command: 'buildAndPush'
       Dockerfile: 'Dockerfile'

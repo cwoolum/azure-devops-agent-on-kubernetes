@@ -46,8 +46,8 @@ steps:
     displayName: 'Push Helm chart to ACR'
     inputs:
       azureSubscription: 'Azure'
-      scriptType: bash
-      scriptLocation: inlineScript
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
       inlineScript: |
         export HELM_EXPERIMENTAL_OCI=1
         TOKEN=$(az acr login --name $(ACR_NAME) --expose-token --output tsv --query accessToken)

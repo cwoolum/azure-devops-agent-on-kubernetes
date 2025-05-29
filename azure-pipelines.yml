@@ -52,5 +52,10 @@ steps:
         export HELM_EXPERIMENTAL_OCI=1
         TOKEN=$(az acr login --name $(ACR_NAME) --expose-token --output tsv --query accessToken)
         echo $TOKEN | helm registry login $(ACR_NAME).azurecr.io --username 00000000-0000-0000-0000-000000000000 --password-stdin
-        CHART_PACKAGE=$(ls chart/*.tgz | head -n1)
+        CHART_PACKAGE=$(ls *.tgz | head -n1)
+        if [ -z "$CHART_PACKAGE" ]; then
+          echo "Error: No Helm chart package found"
+          exit 1
+        fi
+        echo "Pushing chart package: $CHART_PACKAGE"
         helm push $CHART_PACKAGE oci://$(ACR_NAME).azurecr.io/helm

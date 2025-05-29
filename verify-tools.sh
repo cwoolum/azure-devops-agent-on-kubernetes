@@ -50,11 +50,24 @@ echo
 # Check other essential tools
 echo "Checking other essential tools:"
 echo "Git: $(git --version)"
-echo "Docker CLI: $(docker --version)"
+echo "Docker: $(docker --version)"
+echo "Docker Compose: $(docker-compose --version)"
 echo "Azure CLI: $(az --version | head -1)"
 echo "Kubectl: $(kubectl version --client --short 2>/dev/null || echo 'kubectl not found')"
 echo "Helm: $(helm version --short 2>/dev/null || echo 'helm not found')"
 echo "PowerShell: $(pwsh --version 2>/dev/null || echo 'PowerShell not found')"
 
 echo
+echo "Checking Docker daemon status:"
+if docker info >/dev/null 2>&1; then
+    echo "✅ Docker daemon is running"
+    echo "Docker info: $(docker info --format '{{.ServerVersion}}' 2>/dev/null)"
+else
+    echo "⚠️  Docker daemon is not running (expected in build environment)"
+    echo "   Docker will be available when container runs with proper socket mounting"
+fi
+
+echo
 echo "=== Verification Complete ==="
+echo
+echo "For Docker functionality testing, run: ./test-docker.sh"

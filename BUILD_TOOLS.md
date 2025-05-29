@@ -57,11 +57,61 @@ sdkmanager "platforms;android-34"
 - **Node.js 20.x** - JavaScript runtime for modern web development
 - **npm** - Node package manager
 - **Git** - Version control system
-- **Docker CLI** - Container operations
+- **Docker Engine** - Complete Docker installation including:
+  - Docker daemon
+  - Docker CLI
+  - Docker Buildx plugin
+  - Docker Compose plugin
+  - Standalone docker-compose
 - **Azure CLI** - Azure cloud operations
 - **kubectl** - Kubernetes command-line tool
 - **Helm** - Kubernetes package manager
 - **yq** - YAML processor
+
+## Docker Support
+
+The image includes a complete Docker installation that supports:
+- Building Docker images
+- Running containers
+- Multi-stage builds with Docker Buildx
+- Container orchestration with Docker Compose
+- Docker-in-Docker scenarios (when properly configured)
+
+### Kubernetes Docker Configuration
+
+To enable Docker functionality in Kubernetes, you need to mount the Docker socket from the host. Update your Helm values:
+
+```yaml
+# values.yaml
+volumes:
+  - name: dockersock
+    hostPath:
+      path: /var/run/docker.sock
+
+volumeMounts:
+  - name: dockersock
+    mountPath: "/var/run/docker.sock"
+```
+
+**Security Note**: Mounting the Docker socket gives the container root access to the host. Use with caution in production environments. Consider alternatives like:
+- Kaniko for building images
+- Buildah for rootless builds
+- DinD (Docker-in-Docker) with proper security contexts
+
+### Docker Usage Examples:
+```bash
+# Build a Docker image
+docker build -t myapp:latest .
+
+# Run a container
+docker run -d --name myapp myapp:latest
+
+# Use Docker Compose
+docker-compose up -d
+
+# Build multi-platform images with buildx
+docker buildx build --platform linux/amd64,linux/arm64 -t myapp:latest .
+```
 
 ## Tool Verification
 
@@ -104,6 +154,25 @@ steps:
     tasks: 'assembleDebug'
 ```
 
+### Docker Build Pipeline:
+```yaml
+steps:
+- task: Docker@2
+  displayName: 'Build and push Docker image'
+  inputs:
+    containerRegistry: 'myregistry'
+    repository: 'myapp'
+    command: 'buildAndPush'
+    Dockerfile: '**/Dockerfile'
+    tags: |
+      $(Build.BuildId)
+      latest
+
+- script: |
+    docker-compose -f docker-compose.test.yml up --abort-on-container-exit
+  displayName: 'Run integration tests with Docker Compose'
+```
+
 ## Supported Project Types
 
 This agent image can handle:
@@ -112,6 +181,9 @@ This agent image can handle:
 - ✅ Android applications (Java/Kotlin)
 - ✅ Java applications
 - ✅ Node.js / JavaScript applications
-- ✅ Docker-based builds
+- ✅ Docker-based builds and deployments
+- ✅ Multi-container applications with Docker Compose
+- ✅ Container image builds with Docker Buildx
 - ✅ Kubernetes deployments
 - ✅ Azure cloud deployments
+- ✅ Docker-in-Docker scenarios (with proper configuration)

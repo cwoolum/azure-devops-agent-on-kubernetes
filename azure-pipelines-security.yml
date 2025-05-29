@@ -1,0 +1,173 @@
+# Security and compliance pipeline for Azure DevOps Agent
+# Runs comprehensive security scans and compliance checks
+
+trigger: none # Manual trigger only
+
+pr: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: acrName
+    value: fanfindadmin
+  - name: imageName
+    value: azure-devops-agent
+
+jobs:
+  - job: SecurityScan
+    displayName: 'Security and Compliance Scanning'
+    steps:
+      - checkout: self
+
+      # Scan Dockerfile for security issues
+      - script: |
+          echo "Installing security scanning tools..."
+          # Install Trivy
+          sudo apt-get update
+          sudo apt-get install wget apt-transport-https gnupg lsb-release -y
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install trivy -y
+
+          # Install Hadolint
+          wget -O /tmp/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          chmod +x /tmp/hadolint
+          sudo mv /tmp/hadolint /usr/local/bin/hadolint
+        displayName: 'Install security tools'
+
+      # Dockerfile security analysis
+      - script: |
+          echo "Scanning Dockerfile for security issues..."
+          hadolint Dockerfile > dockerfile-scan-results.txt || echo "Hadolint scan completed"
+          cat dockerfile-scan-results.txt
+        displayName: 'Dockerfile security scan'
+
+      # Scan dependencies in package files
+      - script: |
+          echo "Scanning for known vulnerabilities in dependencies..."
+          # This would scan package.json, requirements.txt, etc. if they existed
+          echo "No package dependency files found to scan"
+        displayName: 'Dependency vulnerability scan'
+
+      # Filesystem security scan
+      - script: |
+          echo "Scanning filesystem configuration..."
+          trivy fs . --severity HIGH,CRITICAL > filesystem-scan-results.txt || echo "Filesystem scan completed"
+          cat filesystem-scan-results.txt
+        displayName: 'Filesystem security scan'
+
+      # YAML and configuration file security scan
+      - script: |
+          echo "Scanning YAML and configuration files..."
+          # Scan Helm charts for security issues
+          if [ -d "chart" ]; then
+            echo "Scanning Helm chart for security configurations..."
+            # Check for common security misconfigurations
+            grep -r "privileged.*true" chart/ || echo "No privileged containers found"
+            grep -r "runAsRoot.*false" chart/ && echo "✅ Non-root execution configured" || echo "⚠️  Root execution detected"
+            grep -r "allowPrivilegeEscalation.*false" chart/ && echo "✅ Privilege escalation disabled" || echo "⚠️  Privilege escalation not explicitly disabled"
+          fi
+        displayName: 'Configuration security scan'
+
+      # License compliance check
+      - script: |
+          echo "Checking license compliance..."
+          if [ -f "LICENSE" ]; then
+            echo "✅ License file found"
+            echo "License type: $(head -1 LICENSE)"
+          else
+            echo "⚠️  No license file found"
+          fi
+        displayName: 'License compliance check'
+
+      # Generate security report
+      - script: |
+          echo "# Security Scan Report" > security-report.md
+          echo "Generated on: $(date)" >> security-report.md
+          echo "" >> security-report.md
+          echo "## Dockerfile Security Scan" >> security-report.md
+          echo '```' >> security-report.md
+          cat dockerfile-scan-results.txt >> security-report.md || echo "No Dockerfile scan results"
+          echo '```' >> security-report.md
+          echo "" >> security-report.md
+          echo "## Filesystem Security Scan" >> security-report.md
+          echo '```' >> security-report.md
+          cat filesystem-scan-results.txt >> security-report.md || echo "No filesystem scan results"
+          echo '```' >> security-report.md
+          
+          echo "Security report generated:"
+          cat security-report.md
+        displayName: 'Generate security report'
+
+      # Publish security scan results
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish security scan results'
+        inputs:
+          pathToPublish: '$(System.DefaultWorkingDirectory)'
+          artifactName: 'security-scan-results'
+          publishLocation: 'Container'
+        condition: always()
+
+  - job: ComplianceCheck
+    displayName: 'Compliance and Best Practices Check'
+    dependsOn: SecurityScan
+    steps:
+      - checkout: self
+
+      # Check for required documentation
+      - script: |
+          echo "Checking for required documentation..."
+          required_files=("README.md" "LICENSE" "chart/README.md" "chart/Chart.yaml")
+          missing_files=()
+          
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              missing_files+=("$file")
+            else
+              echo "✅ Found: $file"
+            fi
+          done
+          
+          if [ ${#missing_files[@]} -gt 0 ]; then
+            echo "⚠️  Missing files:"
+            for file in "${missing_files[@]}"; do
+              echo "  - $file"
+            done
+          else
+            echo "✅ All required documentation files present"
+          fi
+        displayName: 'Documentation compliance check'
+
+      # Check Helm chart best practices
+      - script: |
+          echo "Checking Helm chart best practices..."
+          if [ -f "chart/Chart.yaml" ]; then
+            echo "Validating Chart.yaml structure..."
+            # Check for required fields
+            yq eval '.name' chart/Chart.yaml > /dev/null && echo "✅ Chart name defined" || echo "❌ Chart name missing"
+            yq eval '.version' chart/Chart.yaml > /dev/null && echo "✅ Chart version defined" || echo "❌ Chart version missing"
+            yq eval '.description' chart/Chart.yaml > /dev/null && echo "✅ Chart description defined" || echo "❌ Chart description missing"
+            yq eval '.maintainers' chart/Chart.yaml > /dev/null && echo "✅ Maintainers defined" || echo "⚠️  No maintainers defined"
+          fi
+          
+          # Lint Helm chart
+          helm lint ./chart && echo "✅ Helm chart passed linting" || echo "⚠️  Helm chart linting issues found"
+        displayName: 'Helm chart best practices check'
+
+      # Check for build reproducibility
+      - script: |
+          echo "Checking build reproducibility..."
+          if grep -q "BUILD_DATE" Dockerfile; then
+            echo "✅ Build metadata arguments present"
+          else
+            echo "⚠️  Consider adding build metadata arguments"
+          fi
+          
+          if grep -q "LABEL" Dockerfile; then
+            echo "✅ Docker labels present"
+          else
+            echo "⚠️  Consider adding Docker labels for metadata"
+          fi
+        displayName: 'Build reproducibility check'

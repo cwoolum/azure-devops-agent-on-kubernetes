@@ -1,0 +1,65 @@
+# Production environment values
+# Override default chart values for production deployments
+
+replicaCount: 3  # Higher replica count for production
+
+agent:
+  organizationUrl: "https://dev.azure.com/your-org"
+  pool: "production-pool"
+  # PAT should be provided via secret
+
+image:
+  pullPolicy: IfNotPresent  # Use cached images in production
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+# Production-specific labels
+podLabels:
+  environment: production
+  team: devops
+  monitoring: enabled
+
+# Stricter security context for production
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Node affinity for production workloads
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: node-type
+          operator: In
+          values:
+          - production
+
+# Tolerations for dedicated nodes
+tolerations:
+  - key: "dedicated"
+    operator: "Equal"
+    value: "production"
+    effect: "NoSchedule"
+
+# Resource quotas and limits
+nodeSelector:
+  environment: production

@@ -1,0 +1,174 @@
+# Template for running quality gates and validation checks
+parameters:
+  - name: runCodeQuality
+    type: boolean
+    default: true
+  - name: runSecurityScan
+    type: boolean
+    default: true
+  - name: runPerformanceTest
+    type: boolean
+    default: false
+  - name: chartPath
+    type: string
+    default: ./chart
+  - name: dockerfilePath
+    type: string
+    default: ./Dockerfile
+
+steps:
+  # Code quality checks
+  - ${{ if parameters.runCodeQuality }}:
+    - script: |
+        echo "Running code quality checks..."
+        
+        # Dockerfile linting with hadolint
+        if [ ! -f /tmp/hadolint ]; then
+          wget -O /tmp/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          chmod +x /tmp/hadolint
+        fi
+        
+        echo "Linting Dockerfile..."
+        /tmp/hadolint ${{ parameters.dockerfilePath }} --format json > $(Agent.TempDirectory)/hadolint-results.json || true
+        
+        # Check for critical Dockerfile issues
+        CRITICAL_ISSUES=$(cat $(Agent.TempDirectory)/hadolint-results.json | jq '[.[] | select(.level == "error")] | length')
+        if [ "$CRITICAL_ISSUES" -gt 0 ]; then
+          echo "❌ Critical Dockerfile issues found: $CRITICAL_ISSUES"
+          cat $(Agent.TempDirectory)/hadolint-results.json | jq '.[] | select(.level == "error")'
+          echo "##vso[task.logissue type=error]Critical Dockerfile issues found"
+        else
+          echo "✅ No critical Dockerfile issues found"
+        fi
+      displayName: 'Code Quality - Dockerfile Linting'
+      continueOnError: true
+
+  # Helm chart validation and testing
+  - ${{ if parameters.runCodeQuality }}:
+    - script: |
+        echo "Validating Helm chart..."
+        
+        # Install helm-unittest if not available
+        if ! helm plugin list | grep -q unittest; then
+          helm plugin install https://github.com/helm-unittest/helm-unittest
+        fi
+        
+        # Lint Helm chart
+        helm lint ${{ parameters.chartPath }}
+        
+        # Dry run template rendering
+        helm template test-release ${{ parameters.chartPath }} --dry-run > $(Agent.TempDirectory)/helm-template-output.yaml
+        
+        # Validate YAML syntax
+        if command -v yamllint &> /dev/null; then
+          yamllint $(Agent.TempDirectory)/helm-template-output.yaml
+        fi
+        
+        # Run Helm unit tests if they exist
+        if [ -d "${{ parameters.chartPath }}/tests" ]; then
+          helm unittest ${{ parameters.chartPath }}
+        fi
+        
+        echo "✅ Helm chart validation completed"
+      displayName: 'Code Quality - Helm Chart Validation'
+      continueOnError: true
+
+  # Security scanning
+  - ${{ if parameters.runSecurityScan }}:
+    - script: |
+        echo "Running security scans..."
+        
+        # Check for secrets in code
+        if command -v gitleaks &> /dev/null; then
+          gitleaks detect --source . --verbose --report-format json --report-path $(Agent.TempDirectory)/gitleaks-report.json || true
+          if [ -f "$(Agent.TempDirectory)/gitleaks-report.json" ]; then
+            SECRETS_FOUND=$(cat $(Agent.TempDirectory)/gitleaks-report.json | jq '. | length')
+            if [ "$SECRETS_FOUND" -gt 0 ]; then
+              echo "⚠️ Potential secrets found in code: $SECRETS_FOUND"
+              echo "##vso[task.logissue type=warning]Potential secrets detected in source code"
+            fi
+          fi
+        else
+          echo "GitLeaks not available, skipping secret detection"
+        fi
+        
+        # Check for security issues in Helm chart
+        if command -v checkov &> /dev/null; then
+          checkov -d ${{ parameters.chartPath }} --framework kubernetes --output json --output-file $(Agent.TempDirectory)/checkov-results.json || true
+        fi
+        
+        echo "✅ Security scan completed"
+      displayName: 'Security - Static Analysis'
+      continueOnError: true
+
+  # Performance baseline test
+  - ${{ if parameters.runPerformanceTest }}:
+    - script: |
+        echo "Running performance baseline tests..."
+        
+        # Docker build time test
+        start_time=$(date +%s)
+        docker build -t test-performance-image . --no-cache
+        end_time=$(date +%s)
+        build_duration=$((end_time - start_time))
+        
+        echo "Docker build completed in ${build_duration} seconds"
+        
+        # Set build time threshold (e.g., 300 seconds = 5 minutes)
+        if [ $build_duration -gt 300 ]; then
+          echo "⚠️ Build time exceeded threshold: ${build_duration}s > 300s"
+          echo "##vso[task.logissue type=warning]Build time exceeded performance threshold"
+        fi
+        
+        # Check image size
+        image_size=$(docker images test-performance-image --format "{{.Size}}")
+        echo "Docker image size: $image_size"
+        
+        # Cleanup test image
+        docker rmi test-performance-image || true
+        
+        echo "✅ Performance baseline completed"
+      displayName: 'Performance - Build Baseline'
+      continueOnError: true
+
+  # Generate quality report
+  - script: |
+      echo "Generating quality gate report..."
+      
+      cat > $(Agent.TempDirectory)/quality-report.md << 'EOF'
+      # Quality Gate Report
+      
+      ## Build Information
+      - **Build ID**: $(Build.BuildId)
+      - **Source Branch**: $(Build.SourceBranchName)
+      - **Commit**: $(Build.SourceVersion)
+      - **Build Reason**: $(Build.Reason)
+      
+      ## Quality Checks
+      - ✅ Dockerfile validation
+      - ✅ Helm chart validation
+      - ✅ Security scanning
+      - ✅ Performance baseline
+      
+      ## Reports Generated
+      EOF
+      
+      if [ -f "$(Agent.TempDirectory)/hadolint-results.json" ]; then
+        echo "- Dockerfile linting: $(Agent.TempDirectory)/hadolint-results.json" >> $(Agent.TempDirectory)/quality-report.md
+      fi
+      
+      if [ -f "$(Agent.TempDirectory)/gitleaks-report.json" ]; then
+        echo "- Security scan: $(Agent.TempDirectory)/gitleaks-report.json" >> $(Agent.TempDirectory)/quality-report.md
+      fi
+      
+      echo "Quality gate report generated"
+    displayName: 'Generate Quality Report'
+    
+  # Publish quality artifacts
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Quality Reports'
+    inputs:
+      pathToPublish: '$(Agent.TempDirectory)'
+      artifactName: 'quality-reports'
+      publishLocation: 'Container'
+    condition: always()

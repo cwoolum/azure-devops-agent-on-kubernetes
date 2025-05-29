@@ -2,9 +2,27 @@ ARG ARG_UBUNTU_BASE_IMAGE="ubuntu"
 ARG ARG_UBUNTU_BASE_IMAGE_TAG="20.04"
 
 FROM ${ARG_UBUNTU_BASE_IMAGE}:${ARG_UBUNTU_BASE_IMAGE_TAG}
-WORKDIR /azp
+
+# Build arguments for metadata
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VERSION
 ARG ARG_TARGETARCH=linux-x64
 ARG ARG_VSTS_AGENT_VERSION=4.251.0
+
+# Add metadata labels
+LABEL org.opencontainers.image.title="Azure DevOps Agent on Kubernetes" \
+      org.opencontainers.image.description="Dockerized Azure DevOps build agent with comprehensive tooling support" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.created="$BUILD_DATE" \
+      org.opencontainers.image.revision="$VCS_REF" \
+      org.opencontainers.image.source="https://github.com/btungut/azure-devops-agent-on-kubernetes" \
+      org.opencontainers.image.documentation="https://github.com/btungut/azure-devops-agent-on-kubernetes/blob/master/README.md" \
+      org.opencontainers.image.vendor="Burak Tungut" \
+      org.opencontainers.image.licenses="MIT" \
+      maintainer="Burak Tungut <info@buraktungut.com>"
+
+WORKDIR /azp
 
 
 # To make it easier for build and release pipelines to run apt-get,
@@ -172,7 +190,7 @@ RUN chmod +x start.sh
 
 # Create non-root user under docker group
 RUN useradd -m -s /bin/bash -u "1000" azdouser
-RUN groupadd docker && usermod -aG docker azdouser
+RUN groupadd docker || true && usermod -aG docker azdouser
 RUN apt-get update \
     && apt-get install -y sudo \
     && echo azdouser ALL=\(root\) NOPASSWD:ALL >> /etc/sudoers

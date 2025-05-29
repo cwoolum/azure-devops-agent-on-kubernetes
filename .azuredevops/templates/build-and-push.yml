@@ -1,0 +1,168 @@
+# Template for building and pushing Azure DevOps Agent Docker image and Helm chart
+parameters:
+  - name: acrName
+    type: string
+    default: fanfindadmin
+  - name: imageName
+    type: string
+    default: azure-devops-agent
+  - name: imageTag
+    type: string
+    default: $(Build.BuildId)
+  - name: azureSubscription
+    type: string
+    default: Azure
+  - name: chartPath
+    type: string
+    default: ./chart
+  - name: runVulnerabilityScan
+    type: boolean
+    default: true
+  - name: enableCaching
+    type: boolean
+    default: true
+
+steps:
+  - checkout: self
+
+  # Cache Docker layers
+  - ${{ if parameters.enableCaching }}:
+    - task: Cache@2
+      displayName: 'Cache Docker layers'
+      inputs:
+        key: 'docker | "$(Agent.OS)" | Dockerfile'
+        path: /tmp/.buildx-cache
+
+  # Cache Helm dependencies
+  - ${{ if parameters.enableCaching }}:
+    - task: Cache@2
+      displayName: 'Cache Helm dependencies'
+      inputs:
+        key: 'helm | "$(Agent.OS)" | ${{ parameters.chartPath }}/Chart.yaml'
+        path: ${{ parameters.chartPath }}/charts
+
+  # Validate build files
+  - script: |
+      echo "Validating build scripts and Dockerfile..."
+      if [ ! -f "Dockerfile" ]; then
+        echo "Error: Dockerfile not found"
+        exit 1
+      fi
+      if [ ! -f "${{ parameters.chartPath }}/Chart.yaml" ]; then
+        echo "Error: Helm chart not found"
+        exit 1
+      fi
+      echo "✅ Build validation passed"
+    displayName: 'Validate build files'
+
+  # Lint Dockerfile
+  - script: |
+      wget -O /tmp/hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+      chmod +x /tmp/hadolint
+      /tmp/hadolint Dockerfile || echo "Dockerfile linting completed with warnings"
+    displayName: 'Lint Dockerfile'
+    continueOnError: true
+
+  # Validate Helm chart
+  - script: |
+      helm lint ${{ parameters.chartPath }}
+      helm template test-release ${{ parameters.chartPath }} --dry-run
+    displayName: 'Validate Helm chart'
+
+  # Login to ACR
+  - task: AzureCLI@2
+    displayName: 'Login to Azure Container Registry'
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: 'az acr login --name ${{ parameters.acrName }}'
+
+  # Build and push Docker image
+  - task: Docker@2
+    displayName: 'Build and push Docker image'
+    inputs:
+      containerRegistry: ${{ parameters.acrName }}
+      repository: '${{ parameters.acrName }}.azurecr.io/${{ parameters.imageName }}'
+      command: 'buildAndPush'
+      Dockerfile: 'Dockerfile'
+      buildContext: '$(Build.SourcesDirectory)/src'
+      arguments: |
+        --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+        --build-arg VCS_REF=$(Build.SourceVersion)
+        --build-arg VERSION=$(Build.BuildNumber)
+      tags: |
+        ${{ parameters.imageTag }}
+        latest
+        $(Build.SourceBranchName)
+
+  # Vulnerability scan
+  - ${{ if parameters.runVulnerabilityScan }}:
+    - task: AzureCLI@2
+      displayName: 'Scan Docker image for vulnerabilities'
+      inputs:
+        azureSubscription: ${{ parameters.azureSubscription }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          if command -v trivy &> /dev/null; then
+            trivy image --exit-code 0 --severity HIGH,CRITICAL ${{ parameters.acrName }}.azurecr.io/${{ parameters.imageName }}:${{ parameters.imageTag }}
+          else
+            echo "Trivy not available, skipping vulnerability scan"
+          fi
+      continueOnError: true
+
+  # Update Helm chart version
+  - script: |
+      yq eval '.version = "$(Build.BuildNumber)"' -i ${{ parameters.chartPath }}/Chart.yaml
+      yq eval '.appVersion = "${{ parameters.imageTag }}"' -i ${{ parameters.chartPath }}/Chart.yaml
+      echo "Updated Chart.yaml:"
+      cat ${{ parameters.chartPath }}/Chart.yaml
+    displayName: 'Update Helm chart version'
+
+  # Package Helm chart
+  - script: |
+      helm package ${{ parameters.chartPath }} \
+        --version $(Build.BuildNumber) \
+        --app-version ${{ parameters.imageTag }} \
+        --destination $(Build.ArtifactStagingDirectory)
+    displayName: 'Package Helm chart'
+
+  # Push Helm chart to ACR
+  - task: AzureCLI@2
+    displayName: 'Push Helm chart to ACR'
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -euo pipefail
+        export HELM_EXPERIMENTAL_OCI=1
+        
+        TOKEN=$(az acr login --name ${{ parameters.acrName }} --expose-token --output tsv --query accessToken)
+        echo $TOKEN | helm registry login ${{ parameters.acrName }}.azurecr.io --username 00000000-0000-0000-0000-000000000000 --password-stdin
+        
+        CHART_PACKAGE=$(find $(Build.ArtifactStagingDirectory) -name "*.tgz" | head -n1)
+        if [ -z "$CHART_PACKAGE" ]; then
+          echo "Error: No Helm chart package found"
+          exit 1
+        fi
+        
+        echo "Pushing chart package: $CHART_PACKAGE"
+        helm push "$CHART_PACKAGE" oci://${{ parameters.acrName }}.azurecr.io/helm
+
+  # Generate release notes
+  - script: |
+      echo "## Build Summary" > $(Build.ArtifactStagingDirectory)/release-notes.md
+      echo "- **Build ID**: $(Build.BuildId)" >> $(Build.ArtifactStagingDirectory)/release-notes.md
+      echo "- **Docker Image**: ${{ parameters.acrName }}.azurecr.io/${{ parameters.imageName }}:${{ parameters.imageTag }}" >> $(Build.ArtifactStagingDirectory)/release-notes.md
+      echo "- **Helm Chart Version**: $(Build.BuildNumber)" >> $(Build.ArtifactStagingDirectory)/release-notes.md
+    displayName: 'Generate release notes'
+
+  # Publish artifacts
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish build artifacts'
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)'
+      artifactName: 'helm-chart-and-docs'
+      publishLocation: 'Container'

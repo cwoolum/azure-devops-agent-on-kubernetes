@@ -1,0 +1,40 @@
+# Development environment values
+# Override default chart values for development deployments
+
+replicaCount: 1
+
+agent:
+  organizationUrl: "https://dev.azure.com/your-org"
+  pool: "dev-pool"
+  # PAT should be provided via secret or pipeline variable
+
+image:
+  pullPolicy: Always  # Always pull latest for dev
+
+resources:
+  limits:
+    cpu: 250m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Enable Docker support for development
+volumes:
+  - name: dockersock
+    hostPath:
+      path: /var/run/docker.sock
+volumeMounts:
+  - name: dockersock
+    mountPath: "/var/run/docker.sock"
+
+# Development-specific labels
+podLabels:
+  environment: development
+  team: devops
+
+# Relaxed security context for development
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000

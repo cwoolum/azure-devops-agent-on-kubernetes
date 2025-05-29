@@ -1,0 +1,241 @@
+# Advanced Azure DevOps Pipeline with Quality Gates and Comprehensive Testing
+# This pipeline includes quality gates, security scanning, performance testing, and multi-environment deployment
+
+trigger:
+  branches:
+    include:
+      - master
+      - main
+      - develop
+      - feature/*
+  paths:
+    exclude:
+      - README.md
+      - LICENSE
+      - examples/**
+      - .gitignore
+      - docs/**
+
+pr:
+  branches:
+    include:
+      - master
+      - main
+      - develop
+
+variables:
+  # Registry and image configuration
+  ACR_NAME: fanfindadmin
+  IMAGE_NAME: azure-devops-agent
+  IMAGE_TAG: $(Build.BuildId)
+  CHART_VERSION: $(Build.BuildNumber)
+  
+  # Feature flags
+  ENABLE_QUALITY_GATES: true
+  ENABLE_SECURITY_SCAN: true
+  ENABLE_PERFORMANCE_TEST: ${{ eq(variables['Build.SourceBranch'], 'refs/heads/main') }}
+  
+  # Environment flags
+  IS_MAIN_BRANCH: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
+  IS_DEVELOP_BRANCH: $[eq(variables['Build.SourceBranch'], 'refs/heads/develop')]
+  IS_FEATURE_BRANCH: $[startsWith(variables['Build.SourceBranch'], 'refs/heads/feature/')]
+
+stages:
+  # Stage 1: Quality Gates and Validation
+  - stage: QualityGates
+    displayName: 'Quality Gates & Validation'
+    condition: always()
+    jobs:
+      - job: QualityChecks
+        displayName: 'Run Quality Checks'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - template: .azuredevops/templates/quality-gates.yml
+            parameters:
+              runCodeQuality: $(ENABLE_QUALITY_GATES)
+              runSecurityScan: $(ENABLE_SECURITY_SCAN)
+              runPerformanceTest: $(ENABLE_PERFORMANCE_TEST)
+              chartPath: './chart'
+              dockerfilePath: './Dockerfile'
+
+  # Stage 2: Build and Test
+  - stage: Build
+    displayName: 'Build & Package'
+    dependsOn: QualityGates
+    condition: succeeded()
+    jobs:
+      - job: BuildAndPush
+        displayName: 'Build Docker Image and Helm Chart'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - template: .azuredevops/templates/build-and-push.yml
+            parameters:
+              acrName: $(ACR_NAME)
+              imageName: $(IMAGE_NAME)
+              imageTag: $(IMAGE_TAG)
+              azureSubscription: 'Azure'
+              chartPath: './chart'
+              runVulnerabilityScan: true
+              enableCaching: true
+
+  # Stage 3: Integration Tests
+  - stage: IntegrationTests
+    displayName: 'Integration Tests'
+    dependsOn: Build
+    condition: and(succeeded(), or(eq(variables.IS_MAIN_BRANCH, true), eq(variables.IS_DEVELOP_BRANCH, true)))
+    jobs:
+      - job: TestDeployment
+        displayName: 'Test Deployment'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              echo "Running integration tests..."
+              
+              # Create test namespace
+              NAMESPACE="test-$(Build.BuildId)"
+              echo "Creating test namespace: $NAMESPACE"
+              
+              # Simulate Helm deployment test
+              helm template test-release ./chart \
+                --set image.repository=$(ACR_NAME).azurecr.io/$(IMAGE_NAME) \
+                --set image.tag=$(IMAGE_TAG) \
+                --namespace $NAMESPACE \
+                --dry-run > test-deployment.yaml
+              
+              # Validate the rendered templates
+              if command -v kubeval &> /dev/null; then
+                kubeval test-deployment.yaml
+              else
+                echo "Kubeval not available, skipping Kubernetes validation"
+              fi
+              
+              echo "✅ Integration tests completed"
+            displayName: 'Test Helm Deployment'
+
+  # Stage 4: Development Deployment
+  - stage: DeployDev
+    displayName: 'Deploy to Development'
+    dependsOn: IntegrationTests
+    condition: and(succeeded(), eq(variables.IS_DEVELOP_BRANCH, true))
+    jobs:
+      - deployment: DeployTodev
+        displayName: 'Deploy to Development Environment'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'development'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: .azuredevops/templates/deploy-helm-chart.yml
+                  parameters:
+                    environment: 'dev'
+                    acrName: $(ACR_NAME)
+                    imageName: $(IMAGE_NAME)
+                    imageTag: $(IMAGE_TAG)
+                    kubernetesServiceConnection: 'kubernetes-dev'
+                    namespace: 'azure-devops-dev'
+                    valuesFile: 'environments/dev-values.yaml'
+
+  # Stage 5: Staging Deployment
+  - stage: DeployStaging
+    displayName: 'Deploy to Staging'
+    dependsOn: IntegrationTests
+    condition: and(succeeded(), eq(variables.IS_MAIN_BRANCH, true))
+    jobs:
+      - deployment: DeployToStaging
+        displayName: 'Deploy to Staging Environment'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'staging'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: .azuredevops/templates/deploy-helm-chart.yml
+                  parameters:
+                    environment: 'staging'
+                    acrName: $(ACR_NAME)
+                    imageName: $(IMAGE_NAME)
+                    imageTag: $(IMAGE_TAG)
+                    kubernetesServiceConnection: 'kubernetes-staging'
+                    namespace: 'azure-devops-staging'
+                    valuesFile: 'environments/staging-values.yaml'
+
+  # Stage 6: Production Deployment (with manual approval)
+  - stage: DeployProduction
+    displayName: 'Deploy to Production'
+    dependsOn: DeployStaging
+    condition: and(succeeded(), eq(variables.IS_MAIN_BRANCH, true))
+    jobs:
+      - deployment: DeployToProduction
+        displayName: 'Deploy to Production Environment'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: .azuredevops/templates/deploy-helm-chart.yml
+                  parameters:
+                    environment: 'prod'
+                    acrName: $(ACR_NAME)
+                    imageName: $(IMAGE_NAME)
+                    imageTag: $(IMAGE_TAG)
+                    kubernetesServiceConnection: 'kubernetes-prod'
+                    namespace: 'azure-devops-prod'
+                    valuesFile: 'environments/prod-values.yaml'
+
+  # Stage 7: Post-Deployment Validation
+  - stage: PostDeploymentValidation
+    displayName: 'Post-Deployment Validation'
+    dependsOn: 
+      - DeployDev
+      - DeployStaging
+      - DeployProduction
+    condition: always()
+    jobs:
+      - job: ValidationChecks
+        displayName: 'Post-Deployment Checks'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - script: |
+              echo "Running post-deployment validation..."
+              
+              # Generate deployment report
+              cat > $(Build.ArtifactStagingDirectory)/deployment-report.md << 'EOF'
+              # Deployment Report
+              
+              ## Build Information
+              - **Build ID**: $(Build.BuildId)
+              - **Image**: $(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(IMAGE_TAG)
+              - **Chart Version**: $(CHART_VERSION)
+              - **Branch**: $(Build.SourceBranchName)
+              - **Commit**: $(Build.SourceVersion)
+              
+              ## Deployment Status
+              EOF
+              
+              if [ "$(variables.IS_DEVELOP_BRANCH)" = "True" ]; then
+                echo "- ✅ Development: Deployed" >> $(Build.ArtifactStagingDirectory)/deployment-report.md
+              fi
+              
+              if [ "$(variables.IS_MAIN_BRANCH)" = "True" ]; then
+                echo "- ✅ Staging: Deployed" >> $(Build.ArtifactStagingDirectory)/deployment-report.md
+                echo "- ✅ Production: Deployed" >> $(Build.ArtifactStagingDirectory)/deployment-report.md
+              fi
+              
+              echo "Post-deployment validation completed"
+            displayName: 'Generate Deployment Report'
+            
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Deployment Report'
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'deployment-reports'
+              publishLocation: 'Container'

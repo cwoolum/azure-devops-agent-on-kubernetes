@@ -1,0 +1,129 @@
+# Template for deploying Helm chart to Kubernetes
+parameters:
+  - name: environment
+    type: string
+  - name: namespace
+    type: string
+  - name: acrName
+    type: string
+  - name: imageName
+    type: string
+  - name: imageTag
+    type: string
+  - name: chartVersion
+    type: string
+  - name: azureSubscription
+    type: string
+  - name: kubernetesServiceConnection
+    type: string
+  - name: releaseName
+    type: string
+    default: azdo-agent
+  - name: valuesFile
+    type: string
+    default: ''
+
+steps:
+  # Download build artifacts containing the Helm chart
+  - download: current
+    artifact: helm-chart-and-docs
+    displayName: 'Download Helm chart artifacts'
+
+  # Install kubectl and helm if not available
+  - task: KubectlInstaller@0
+    displayName: 'Install kubectl'
+    inputs:
+      kubectlVersion: 'latest'
+
+  - task: HelmInstaller@1
+    displayName: 'Install Helm'
+    inputs:
+      helmVersionToInstall: 'latest'
+
+  # Deploy using Helm chart from ACR
+  - task: AzureCLI@2
+    displayName: 'Deploy Helm chart to ${{ parameters.environment }}'
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -euo pipefail
+        
+        # Login to ACR
+        az acr login --name ${{ parameters.acrName }}
+        
+        # Setup Helm OCI
+        export HELM_EXPERIMENTAL_OCI=1
+        TOKEN=$(az acr login --name ${{ parameters.acrName }} --expose-token --output tsv --query accessToken)
+        echo $TOKEN | helm registry login ${{ parameters.acrName }}.azurecr.io --username 00000000-0000-0000-0000-000000000000 --password-stdin
+        
+        # Set chart name and version
+        CHART_NAME="azure-devops-agent"
+        CHART_VERSION="${{ parameters.chartVersion }}"
+        
+        # Pull and deploy chart
+        helm pull oci://${{ parameters.acrName }}.azurecr.io/helm/$CHART_NAME --version $CHART_VERSION --untar
+        
+        # Prepare values file
+        VALUES_FILE=""
+        if [ -n "${{ parameters.valuesFile }}" ] && [ -f "${{ parameters.valuesFile }}" ]; then
+          VALUES_FILE="--values ${{ parameters.valuesFile }}"
+        fi
+        
+        # Deploy with Helm
+        helm upgrade --install ${{ parameters.releaseName }} ./$CHART_NAME \
+          --namespace ${{ parameters.namespace }} \
+          --create-namespace \
+          --set image.repository=${{ parameters.acrName }}.azurecr.io/${{ parameters.imageName }} \
+          --set image.tag=${{ parameters.imageTag }} \
+          --set environment=${{ parameters.environment }} \
+          $VALUES_FILE \
+          --wait \
+          --timeout=300s
+        
+        # Verify deployment
+        kubectl get pods -n ${{ parameters.namespace }} -l app.kubernetes.io/name=$CHART_NAME
+        kubectl get services -n ${{ parameters.namespace }} -l app.kubernetes.io/name=$CHART_NAME
+
+  # Setup monitoring and alerting
+  - template: monitoring-setup.yml
+    parameters:
+      environment: ${{ parameters.environment }}
+      namespace: ${{ parameters.namespace }}
+      appName: ${{ parameters.imageName }}
+      kubernetesServiceConnection: ${{ parameters.kubernetesServiceConnection }}
+      enablePrometheus: true
+      enableLogging: true
+
+  # Run post-deployment health checks
+  - script: |
+      echo "Running post-deployment health checks for ${{ parameters.environment }}..."
+      
+      # Wait for pods to be ready
+      kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=azure-devops-agent -n ${{ parameters.namespace }} --timeout=300s
+      
+      # Check pod status
+      READY_PODS=$(kubectl get pods -n ${{ parameters.namespace }} -l app.kubernetes.io/name=azure-devops-agent -o jsonpath='{.items[*].status.containerStatuses[*].ready}')
+      echo "Pod ready status: $READY_PODS"
+      
+      # Get deployment status
+      kubectl rollout status deployment/${{ parameters.releaseName }}-azure-devops-agent -n ${{ parameters.namespace }}
+      
+      # Generate deployment summary
+      cat > $(Agent.TempDirectory)/deployment-summary-${{ parameters.environment }}.md << 'EOF'
+      # Deployment Summary - ${{ parameters.environment }}
+      
+      ## Environment Details
+      - **Environment**: ${{ parameters.environment }}
+      - **Namespace**: ${{ parameters.namespace }}
+      - **Release Name**: ${{ parameters.releaseName }}
+      - **Image**: ${{ parameters.acrName }}.azurecr.io/${{ parameters.imageName }}:${{ parameters.imageTag }}
+      
+      ## Deployment Status
+      EOF
+      
+      kubectl get all -n ${{ parameters.namespace }} -l app.kubernetes.io/name=azure-devops-agent >> $(Agent.TempDirectory)/deployment-summary-${{ parameters.environment }}.md
+      
+      echo "✅ Health checks completed for ${{ parameters.environment }}"
+    displayName: 'Post-Deployment Health Checks'

@@ -1,0 +1,44 @@
+# Staging environment values
+# Override default chart values for staging deployments
+
+replicaCount: 2
+
+agent:
+  organizationUrl: "https://dev.azure.com/your-org"
+  pool: "staging-pool"
+  # PAT should be provided via secret
+
+image:
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# Enable Docker support for staging
+volumes:
+  - name: dockersock
+    hostPath:
+      path: /var/run/docker.sock
+volumeMounts:
+  - name: dockersock
+    mountPath: "/var/run/docker.sock"
+
+# Staging-specific labels
+podLabels:
+  environment: staging
+  team: devops
+
+# Moderate security context for staging
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# Node selector for staging workloads
+nodeSelector:
+  environment: staging

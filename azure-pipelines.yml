@@ -3,59 +3,44 @@
 # packages the Helm chart, and pushes the chart as an OCI artifact to ACR
 
 trigger:
-  - master
+  branches:
+    include:
+      - master
+      - main
+  paths:
+    exclude:
+      - README.md
+      - LICENSE
+      - examples/**
+      - .gitignore
+
+pr:
+  branches:
+    include:
+      - master
+      - main
 
 variables:
   # Set these to your Azure Container Registry details
   ACR_NAME: fanfindadmin
   IMAGE_NAME: azure-devops-agent
   IMAGE_TAG: $(Build.BuildId)
+  CHART_VERSION: $(Build.BuildNumber)
+  # Add additional tags for versioning
+  IS_MAIN_BRANCH: $[eq(variables['Build.SourceBranch'], 'refs/heads/master')]
 
 pool: 
   vmImage: 'ubuntu-latest'
 
-steps:
-  - checkout: self
-
-  - task: AzureCLI@2
-    inputs:
-      azureSubscription: 'Azure'
-      scriptType: 'bash'
-      scriptLocation: 'inlineScript'
-      inlineScript: 'az acr login --name $ACR_NAME'
-
-  - task: Docker@2
-    displayName: 'Build and push Docker image'
-    inputs:
-      containerRegistry: 'fanfindadmin'
-      repository: '$(ACR_NAME).azurecr.io/$(IMAGE_NAME)'
-      command: 'buildAndPush'
-      Dockerfile: 'Dockerfile'
-      buildContext: '$(Build.SourcesDirectory)/src'
-      tags: |
-        $(IMAGE_TAG)
-        latest
-
-  # Package Helm chart
-  - script: |
-      helm package ./chart
-    displayName: 'Package Helm chart'
-
-  # Push Helm chart to ACR as OCI artifact using service connection
-  - task: AzureCLI@2
-    displayName: 'Push Helm chart to ACR'
-    inputs:
-      azureSubscription: 'Azure'
-      scriptType: 'bash'
-      scriptLocation: 'inlineScript'
-      inlineScript: |
-        export HELM_EXPERIMENTAL_OCI=1
-        TOKEN=$(az acr login --name $(ACR_NAME) --expose-token --output tsv --query accessToken)
-        echo $TOKEN | helm registry login $(ACR_NAME).azurecr.io --username 00000000-0000-0000-0000-000000000000 --password-stdin
-        CHART_PACKAGE=$(ls *.tgz | head -n1)
-        if [ -z "$CHART_PACKAGE" ]; then
-          echo "Error: No Helm chart package found"
-          exit 1
-        fi
-        echo "Pushing chart package: $CHART_PACKAGE"
-        helm push $CHART_PACKAGE oci://$(ACR_NAME).azurecr.io/helm
+jobs:
+  - job: BuildAndPush
+    displayName: 'Build Docker Image and Helm Chart'
+    steps:
+      - template: .azuredevops/templates/build-and-push.yml
+        parameters:
+          acrName: $(ACR_NAME)
+          imageName: $(IMAGE_NAME)
+          imageTag: $(IMAGE_TAG)
+          azureSubscription: 'Azure'
+          chartPath: './chart'
+          runVulnerabilityScan: true

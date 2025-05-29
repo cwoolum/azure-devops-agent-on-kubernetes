@@ -1,0 +1,245 @@
+# Template for setting up monitoring and alerting for deployed applications
+parameters:
+  - name: environment
+    type: string
+  - name: namespace
+    type: string
+  - name: appName
+    type: string
+    default: azure-devops-agent
+  - name: kubernetesServiceConnection
+    type: string
+  - name: enablePrometheus
+    type: boolean
+    default: true
+  - name: enableLogging
+    type: boolean
+    default: true
+
+steps:
+  # Setup Prometheus monitoring
+  - ${{ if parameters.enablePrometheus }}:
+    - task: KubernetesManifest@0
+      displayName: 'Setup Prometheus ServiceMonitor'
+      inputs:
+        action: 'deploy'
+        kubernetesServiceConnection: ${{ parameters.kubernetesServiceConnection }}
+        namespace: ${{ parameters.namespace }}
+        manifests: |
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: ${{ parameters.appName }}-monitor
+            namespace: ${{ parameters.namespace }}
+            labels:
+              app: ${{ parameters.appName }}
+              environment: ${{ parameters.environment }}
+          spec:
+            selector:
+              matchLabels:
+                app: ${{ parameters.appName }}
+            endpoints:
+            - port: metrics
+              path: /metrics
+              interval: 30s
+
+  # Setup log aggregation
+  - ${{ if parameters.enableLogging }}:
+    - script: |
+        cat > fluent-bit-config.yaml << 'EOF'
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${{ parameters.appName }}-logging-config
+          namespace: ${{ parameters.namespace }}
+        data:
+          fluent-bit.conf: |
+            [SERVICE]
+                Flush         1
+                Log_Level     info
+                Daemon        off
+                Parsers_File  parsers.conf
+            
+            [INPUT]
+                Name              tail
+                Path              /var/log/containers/*${{ parameters.appName }}*.log
+                Parser            docker
+                Tag               kube.*
+                Refresh_Interval  5
+                Mem_Buf_Limit     50MB
+                Skip_Long_Lines   On
+            
+            [OUTPUT]
+                Name   stdout
+                Match  *
+        EOF
+        
+        echo "Fluent Bit configuration created for ${{ parameters.environment }} environment"
+      displayName: 'Create Logging Configuration'
+
+  # Setup health check monitoring
+  - script: |
+      cat > health-check-cronjob.yaml << 'EOF'
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: ${{ parameters.appName }}-health-check
+        namespace: ${{ parameters.namespace }}
+      spec:
+        schedule: "*/5 * * * *"  # Every 5 minutes
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                - name: health-checker
+                  image: curlimages/curl:latest
+                  command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    if curl -f -s http://${{ parameters.appName }}:8080/health > /dev/null; then
+                      echo "Health check passed for ${{ parameters.appName }} in ${{ parameters.environment }}"
+                    else
+                      echo "Health check failed for ${{ parameters.appName }} in ${{ parameters.environment }}"
+                      exit 1
+                    fi
+                restartPolicy: OnFailure
+      EOF
+      
+      echo "Health check CronJob configuration created"
+    displayName: 'Create Health Check Configuration'
+
+  # Generate monitoring dashboard config
+  - script: |
+      cat > $(Build.ArtifactStagingDirectory)/grafana-dashboard.json << 'EOF'
+      {
+        "dashboard": {
+          "id": null,
+          "title": "Azure DevOps Agent - ${{ parameters.environment }}",
+          "tags": ["azure-devops", "${{ parameters.environment }}"],
+          "style": "dark",
+          "timezone": "browser",
+          "panels": [
+            {
+              "id": 1,
+              "title": "Pod Status",
+              "type": "stat",
+              "targets": [
+                {
+                  "expr": "up{job=\"${{ parameters.appName }}\", namespace=\"${{ parameters.namespace }}\"}",
+                  "legendFormat": "Pod Status"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "color": {
+                    "mode": "palette-classic"
+                  },
+                  "mappings": [
+                    {
+                      "options": {
+                        "0": {
+                          "text": "Down"
+                        },
+                        "1": {
+                          "text": "Up"
+                        }
+                      },
+                      "type": "value"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": 2,
+              "title": "CPU Usage",
+              "type": "graph",
+              "targets": [
+                {
+                  "expr": "rate(container_cpu_usage_seconds_total{namespace=\"${{ parameters.namespace }}\", pod=~\"${{ parameters.appName }}.*\"}[5m])",
+                  "legendFormat": "CPU Usage"
+                }
+              ]
+            },
+            {
+              "id": 3,
+              "title": "Memory Usage",
+              "type": "graph",
+              "targets": [
+                {
+                  "expr": "container_memory_usage_bytes{namespace=\"${{ parameters.namespace }}\", pod=~\"${{ parameters.appName }}.*\"}",
+                  "legendFormat": "Memory Usage"
+                }
+              ]
+            }
+          ],
+          "time": {
+            "from": "now-1h",
+            "to": "now"
+          },
+          "refresh": "30s"
+        }
+      }
+      EOF
+      
+      echo "Grafana dashboard configuration generated"
+    displayName: 'Generate Monitoring Dashboard'
+
+  # Create alerting rules
+  - script: |
+      cat > prometheus-alerts.yaml << 'EOF'
+      apiVersion: monitoring.coreos.com/v1
+      kind: PrometheusRule
+      metadata:
+        name: ${{ parameters.appName }}-alerts
+        namespace: ${{ parameters.namespace }}
+        labels:
+          app: ${{ parameters.appName }}
+          environment: ${{ parameters.environment }}
+      spec:
+        groups:
+        - name: ${{ parameters.appName }}.rules
+          rules:
+          - alert: PodDown
+            expr: up{job="${{ parameters.appName }}", namespace="${{ parameters.namespace }}"} == 0
+            for: 2m
+            labels:
+              severity: critical
+              environment: ${{ parameters.environment }}
+            annotations:
+              summary: "${{ parameters.appName }} pod is down"
+              description: "${{ parameters.appName }} pod in ${{ parameters.environment }} has been down for more than 2 minutes"
+          
+          - alert: HighCPUUsage
+            expr: rate(container_cpu_usage_seconds_total{namespace="${{ parameters.namespace }}", pod=~"${{ parameters.appName }}.*"}[5m]) > 0.8
+            for: 5m
+            labels:
+              severity: warning
+              environment: ${{ parameters.environment }}
+            annotations:
+              summary: "High CPU usage for ${{ parameters.appName }}"
+              description: "CPU usage is above 80% for ${{ parameters.appName }} in ${{ parameters.environment }}"
+          
+          - alert: HighMemoryUsage
+            expr: container_memory_usage_bytes{namespace="${{ parameters.namespace }}", pod=~"${{ parameters.appName }}.*"} > 1073741824
+            for: 5m
+            labels:
+              severity: warning
+              environment: ${{ parameters.environment }}
+            annotations:
+              summary: "High memory usage for ${{ parameters.appName }}"
+              description: "Memory usage is above 1GB for ${{ parameters.appName }} in ${{ parameters.environment }}"
+      EOF
+      
+      echo "Prometheus alerting rules created"
+    displayName: 'Create Alerting Rules'
+
+  # Publish monitoring configurations
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Monitoring Configurations'
+    inputs:
+      pathToPublish: '$(Build.ArtifactStagingDirectory)'
+      artifactName: 'monitoring-configs-${{ parameters.environment }}'
+      publishLocation: 'Container'

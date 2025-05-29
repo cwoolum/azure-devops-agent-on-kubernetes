@@ -3,7 +3,7 @@
 # packages the Helm chart, and pushes the chart as an OCI artifact to ACR
 
 trigger:
-  - main
+  - master
 
 variables:
   # Set these to your Azure Container Registry details

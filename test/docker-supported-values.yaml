@@ -1,6 +1,6 @@
 agent:
   organizationUrl: "https://dev.azure.com/buraktungut"
-  pat: ""
+  pat: "dummy-pat-token-for-testing"
 
 volumes:
   - name: dockersock

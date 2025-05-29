@@ -153,7 +153,7 @@ jobs:
           fi
           
           # Lint Helm chart
-          helm lint ./chart && echo "✅ Helm chart passed linting" || echo "⚠️  Helm chart linting issues found"
+          helm lint ./chart --values test/validation-values.yaml && echo "✅ Helm chart passed linting" || echo "⚠️  Helm chart linting issues found"
         displayName: 'Helm chart best practices check'
 
       # Check for build reproducibility

@@ -65,8 +65,8 @@ steps:
 
   # Validate Helm chart
   - script: |
-      helm lint ${{ parameters.chartPath }}
-      helm template test-release ${{ parameters.chartPath }} --dry-run
+      helm lint ${{ parameters.chartPath }} --values test/validation-values.yaml
+      helm template test-release ${{ parameters.chartPath }} --values test/validation-values.yaml --dry-run
     displayName: 'Validate Helm chart'
 
   # Login to ACR

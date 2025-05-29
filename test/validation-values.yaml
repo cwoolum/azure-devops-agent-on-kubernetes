@@ -1,0 +1,37 @@
+# Test values file for Helm chart validation
+# This file provides minimal required values to pass validation
+agent:
+  # Required: Personal access token (dummy value for validation)
+  pat: "dummy-pat-token-for-validation"
+  
+  # Required: Organization URL
+  organizationUrl: "https://dev.azure.com/test-organization"
+  
+  # Optional but good to have defaults
+  pool: "Default"
+  workingDirectory: "_work"
+
+# Image configuration for validation
+image:
+  repository: "btungut/azure-devops-agent"
+  tag: "4.251.0-stable-v2.2.0"
+  pullPolicy: IfNotPresent
+
+# Resource limits for validation
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# ServiceAccount configuration
+serviceAccount:
+  create: true
+  automount: true
+
+# Security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000

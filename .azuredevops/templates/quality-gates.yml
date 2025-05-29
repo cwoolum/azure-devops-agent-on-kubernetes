@@ -54,10 +54,10 @@ steps:
         fi
         
         # Lint Helm chart
-        helm lint ${{ parameters.chartPath }}
+        helm lint ${{ parameters.chartPath }} --values test/validation-values.yaml
         
         # Dry run template rendering
-        helm template test-release ${{ parameters.chartPath }} --dry-run > $(Agent.TempDirectory)/helm-template-output.yaml
+        helm template test-release ${{ parameters.chartPath }} --values test/validation-values.yaml --dry-run > $(Agent.TempDirectory)/helm-template-output.yaml
         
         # Validate YAML syntax
         if command -v yamllint &> /dev/null; then

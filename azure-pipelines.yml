@@ -17,9 +17,8 @@ steps:
   - checkout: self
 
   - task: AzureCLI@2
-    displayName: 'Login to Azure'
     inputs:
-      azureSubscription: 'Azure subscription 1(1c5db4f7-166c-483f-bc96-2770867aee38)'
+      azureSubscription: 'Azure'
       scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: 'az acr login --name $ACR_NAME'

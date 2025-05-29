@@ -1,0 +1,52 @@
+# Azure Pipelines YAML for building and publishing Docker image and Helm chart
+# This pipeline builds the Dockerfile, pushes it to Azure Container Registry (ACR),
+# packages the Helm chart, and pushes the chart as an OCI artifact to ACR
+
+trigger:
+  - main
+
+variables:
+  # Set these to your Azure Container Registry details
+  ACR_NAME: fanfindadmin
+  IMAGE_NAME: azure-devops-agent
+  IMAGE_TAG: $(Build.BuildId)
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+  - checkout: self
+
+  - task: AzureCLI@2
+    displayName: 'Login to Azure'
+    inputs:
+      azureSubscription: 'Azure'
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        az acr login --name $ACR_NAME
+
+  - task: Docker@2
+    displayName: 'Build and push Docker image'
+    inputs:
+      containerRegistry: 'Azure'  # Use the same Azure service connection as above
+      repository: '$(ACR_NAME).azurecr.io/$(IMAGE_NAME)'
+      command: 'buildAndPush'
+      Dockerfile: 'Dockerfile'
+      buildContext: '$(Build.SourcesDirectory)/src'
+      tags: |
+        $(IMAGE_TAG)
+        latest
+
+  # Package Helm chart
+  - script: |
+      helm package ./chart
+    displayName: 'Package Helm chart'
+
+  # Push Helm chart to ACR as OCI artifact
+  - script: |
+      export HELM_EXPERIMENTAL_OCI=1
+      CHART_PACKAGE=$(ls chart/*.tgz | head -n1)
+      helm registry login $(ACR_NAME).azurecr.io --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }}
+      helm push $CHART_PACKAGE oci://$(ACR_NAME).azurecr.io/helm
+    displayName: 'Push Helm chart to ACR'

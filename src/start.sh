@@ -5,6 +5,9 @@ if [ -x "$(command -v sudo)" ]; then
     sudo chown -R azdouser /home/azdouser
     sudo chown -R azdouser /azp
     sudo chown -R azdouser /var/run/docker.sock || true
+    sudo chown -R azdouser /opt/android-sdk || true
+    sudo chown -R azdouser /opt/gradle || true
+    sudo chown -R azdouser /opt/maven || true
 
     if [ -S /var/run/docker.sock ]; then
       sudo groupadd docker || true

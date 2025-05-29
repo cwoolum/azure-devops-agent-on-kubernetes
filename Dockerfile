@@ -77,6 +77,73 @@ RUN apt-get update \
 
 
 
+# Install .NET Core SDK
+RUN apt-get update \
+    && apt-get install -y dotnet-sdk-8.0 dotnet-sdk-6.0 \
+    && rm -rf /var/lib/apt/lists/*
+
+
+
+# Install Java (required for Android builds)
+RUN apt-get update \
+    && apt-get install -y openjdk-17-jdk openjdk-11-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set JAVA_HOME
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH=$JAVA_HOME/bin:$PATH
+
+
+
+# Install Android SDK and tools
+ENV ANDROID_HOME=/opt/android-sdk
+ENV ANDROID_SDK_ROOT=$ANDROID_HOME
+ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/tools/bin
+
+RUN mkdir -p $ANDROID_HOME/cmdline-tools \
+    && wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+    && unzip commandlinetools-linux-11076708_latest.zip -d $ANDROID_HOME/cmdline-tools \
+    && mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest \
+    && rm commandlinetools-linux-11076708_latest.zip
+
+# Accept Android SDK licenses and install required components
+RUN yes | sdkmanager --licenses \
+    && sdkmanager "platform-tools" "platforms;android-34" "platforms;android-33" "platforms;android-32" "platforms;android-31" \
+    && sdkmanager "build-tools;34.0.0" "build-tools;33.0.2" "build-tools;32.0.0" "build-tools;31.0.0" \
+    && sdkmanager "extras;android;m2repository" "extras;google;m2repository"
+
+
+
+# Install Gradle
+ENV GRADLE_VERSION=8.5
+RUN wget https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip \
+    && unzip gradle-${GRADLE_VERSION}-bin.zip -d /opt \
+    && rm gradle-${GRADLE_VERSION}-bin.zip \
+    && ln -s /opt/gradle-${GRADLE_VERSION} /opt/gradle
+
+ENV GRADLE_HOME=/opt/gradle
+ENV PATH=$PATH:$GRADLE_HOME/bin
+
+
+
+# Install Maven (alternative build tool for Java/Android projects)
+ENV MAVEN_VERSION=3.9.6
+RUN wget https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+    && tar -xzf apache-maven-${MAVEN_VERSION}-bin.tar.gz -C /opt \
+    && rm apache-maven-${MAVEN_VERSION}-bin.tar.gz \
+    && ln -s /opt/apache-maven-${MAVEN_VERSION} /opt/maven
+
+ENV MAVEN_HOME=/opt/maven
+ENV PATH=$PATH:$MAVEN_HOME/bin
+
+
+
+# Install Node.js and npm (often needed for modern mobile development)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs
+
+
+
 # Install Docker CLI
 RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
 RUN echo \
@@ -108,6 +175,9 @@ RUN apt-get update \
 RUN sudo chown -R azdouser /home/azdouser
 RUN sudo chown -R azdouser /azp
 RUN sudo chown -R azdouser /var/run/docker.sock || true
+RUN sudo chown -R azdouser /opt/android-sdk || true
+RUN sudo chown -R azdouser /opt/gradle || true
+RUN sudo chown -R azdouser /opt/maven || true
 USER azdouser
 
 

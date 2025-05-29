@@ -39,7 +39,7 @@ steps:
       displayName: 'Cache Helm dependencies'
       inputs:
         key: 'helm | "$(Agent.OS)" | ${{ parameters.chartPath }}/Chart.yaml'
-        path: ${{ parameters.chartPath }}/charts
+        path: ${{ parameters.chartPath }}
 
   # Validate build files
   - script: |

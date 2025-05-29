@@ -11,8 +11,7 @@ variables:
   IMAGE_NAME: azure-devops-agent
   IMAGE_TAG: $(Build.BuildId)
 
-pool:
-  vmImage: 'ubuntu-latest'
+pool: 'Default'
 
 steps:
   - checkout: self
